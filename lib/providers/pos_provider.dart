@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import '../models/product.dart';
@@ -11,7 +12,15 @@ class CartItem {
   double costPrice;
   double sellPrice;
   int quantity;
-  double discount;
+
+  // Renamed from `discount` -> `lineDiscountTotal`.
+  // This is the TOTAL discount for the whole line (sellPrice * quantity),
+  // NOT a per-unit amount. `SaleItem.discountPerUnit` (see sale.dart) is
+  // the per-unit equivalent used once the sale is recorded. The two used
+  // to share the name `discount` while meaning different things, which
+  // was a data-integrity landmine - see `discountPerUnit` getter below
+  // for the conversion between the two.
+  double lineDiscountTotal;
 
   CartItem({
     required this.product,
@@ -19,11 +28,11 @@ class CartItem {
     required this.costPrice,
     required this.sellPrice,
     required this.quantity,
-    this.discount = 0.0,
+    this.lineDiscountTotal = 0.0,
   });
 
-  double get totalWithDiscount => (sellPrice * quantity) - discount;
-  double get discountPerUnit => quantity > 0 ? (discount / quantity) : 0.0;
+  double get totalWithDiscount => (sellPrice * quantity) - lineDiscountTotal;
+  double get discountPerUnit => quantity > 0 ? (lineDiscountTotal / quantity) : 0.0;
 }
 
 class PosProvider extends ChangeNotifier {
@@ -63,7 +72,7 @@ class PosProvider extends ChangeNotifier {
   }
 
   void updateDiscount(int index, double newDiscount) {
-    cart[index].discount = newDiscount;
+    cart[index].lineDiscountTotal = newDiscount;
     notifyListeners();
   }
 
@@ -77,35 +86,71 @@ class PosProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Returns the first cart item (if any) whose requested quantity now
+  /// exceeds its product's current stock, so callers can abort cleanly
+  /// instead of committing a partial/negative-stock transaction.
+  CartItem? _firstItemExceedingStock() {
+    for (final item in cart) {
+      if (item.quantity > item.product.stockQuantity) {
+        return item;
+      }
+    }
+    return null;
+  }
+
   // إتمام البيع كاش
   Future<bool> completeSale() async {
     if (cart.isEmpty) return false;
 
-    for (var item in cart) {
-      item.product.stockQuantity -= item.quantity;
-      await item.product.save();
+    if (_firstItemExceedingStock() != null) {
+      // Stock changed under us (e.g. another sale) since items were added
+      // to the cart. Abort rather than oversell or partially commit.
+      return false;
     }
 
-    final salesBox = Hive.box<Sale>('sales');
     final List<SaleItem> saleItems = cart
         .map((e) => SaleItem(
               name: e.name,
               costPrice: e.costPrice,
               sellPrice: e.sellPrice,
               quantity: e.quantity,
-              discount: e.discountPerUnit,
+              discountPerUnit: e.discountPerUnit,
             ))
         .toList();
 
     double totalProfit = cart.fold(
         0.0, (sum, e) => sum + (e.totalWithDiscount - (e.costPrice * e.quantity)));
 
-    await salesBox.add(Sale(
+    final salesBox = Hive.box<Sale>('sales');
+    final sale = Sale(
       items: saleItems,
       totalAmount: totalAmount,
       totalProfit: totalProfit,
       createdAt: DateTime.now(),
-    ));
+      source: SaleSource.pos,
+    );
+
+    // ATOMICITY FIX: persist the Sale record FIRST. It is the durable
+    // source of truth that "this transaction happened". If the app
+    // crashes after this line but before stock is decremented below,
+    // the sale is still on disk and stock can be reconciled against it.
+    // The previous order (decrement stock, then write the sale) meant a
+    // crash mid-operation permanently lost stock with no record of why.
+    await salesBox.add(sale);
+
+    try {
+      for (var item in cart) {
+        item.product.stockQuantity -= item.quantity;
+        await item.product.save();
+      }
+    } catch (e, stack) {
+      debugPrint('[PosProvider] Stock decrement failed after sale was recorded: $e');
+      debugPrint('$stack');
+      // The sale is already durable and will not be lost; stock may be
+      // temporarily inconsistent until reconciled. Rethrow so the calling
+      // UI can inform the user, rather than silently reporting success.
+      rethrow;
+    }
 
     clearCart();
     return true;
@@ -115,9 +160,8 @@ class PosProvider extends ChangeNotifier {
   Future<bool> completeSaleAsDebt(String customerName, DebtSupplierProvider debtProvider) async {
     if (cart.isEmpty || customerName.trim().isEmpty) return false;
 
-    for (var item in cart) {
-      item.product.stockQuantity -= item.quantity;
-      await item.product.save();
+    if (_firstItemExceedingStock() != null) {
+      return false;
     }
 
     List<String> itemsTakenList = cart
@@ -130,7 +174,7 @@ class PosProvider extends ChangeNotifier {
               costPrice: e.costPrice,
               sellPrice: e.sellPrice,
               quantity: e.quantity,
-              discount: e.discountPerUnit,
+              discountPerUnit: e.discountPerUnit,
             ))
         .toList();
 
@@ -148,7 +192,21 @@ class PosProvider extends ChangeNotifier {
       totalProfit: totalProfit,
     );
 
+    // ATOMICITY FIX: persist the Debt record FIRST, same reasoning as
+    // completeSale() above - it's the durable source of truth for this
+    // transaction before stock is touched.
     await debtProvider.addDebt(newDebt);
+
+    try {
+      for (var item in cart) {
+        item.product.stockQuantity -= item.quantity;
+        await item.product.save();
+      }
+    } catch (e, stack) {
+      debugPrint('[PosProvider] Stock decrement failed after debt was recorded: $e');
+      debugPrint('$stack');
+      rethrow;
+    }
 
     clearCart();
     return true;

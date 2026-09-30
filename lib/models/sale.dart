@@ -2,6 +2,15 @@ import 'package:hive/hive.dart';
 
 part 'sale.g.dart';
 
+@HiveType(typeId: 7)
+enum SaleSource {
+  @HiveField(0)
+  pos,
+
+  @HiveField(1)
+  debtPayment,
+}
+
 @HiveType(typeId: 1)
 class SaleItem {
   @HiveField(0)
@@ -17,14 +26,14 @@ class SaleItem {
   int quantity;
 
   @HiveField(4)
-  double discount;
+  double discountPerUnit;
 
   SaleItem({
     required this.name,
     required this.costPrice,
     required this.sellPrice,
     required this.quantity,
-    this.discount = 0.0,
+    this.discountPerUnit = 0.0,
   });
 }
 
@@ -42,10 +51,14 @@ class Sale extends HiveObject {
   @HiveField(3)
   DateTime createdAt;
 
+  @HiveField(4)
+  SaleSource source;
+
   Sale({
     required this.items,
     required this.totalAmount,
     required this.totalProfit,
     required this.createdAt,
+    this.source = SaleSource.pos,
   });
 }

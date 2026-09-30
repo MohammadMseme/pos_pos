@@ -118,7 +118,9 @@ class _DebtsScreenState extends State<DebtsScreen> {
     final debtProvider = Provider.of<DebtSupplierProvider>(context);
 
     // تصفية قائمة الديون بحسب النص المكتوب في مربع البحث
-    final filteredDebts = debtProvider.debts.where((debt) {
+    // ملاحظة: نستخدم activeDebts بدلاً من debts لأن الديون المسددة بالكامل
+    // أصبحت تُؤرشف (isPaid = true) بدلاً من حذفها، ولا يجب أن تظهر هنا.
+    final filteredDebts = debtProvider.activeDebts.where((debt) {
       return debt.customerName.toLowerCase().contains(_searchQuery.toLowerCase());
     }).toList();
 

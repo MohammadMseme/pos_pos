@@ -23,10 +23,12 @@ class InventoryProvider extends ChangeNotifier {
     return _salesBox.values.fold(0.0, (sum, sale) => sum + sale.totalProfit);
   }
 
-  // إجمالي الديون الحالية للزبائن
+  // إجمالي الديون الحالية للزبائن (تستثني الديون المسددة بالكامل والمؤرشفة)
   double get totalCustomerDebts {
     final debtBox = Hive.box<Debt>('debts');
-    return debtBox.values.fold(0.0, (sum, debt) => sum + debt.remainingAmount);
+    return debtBox.values
+        .where((d) => !d.isPaid)
+        .fold(0.0, (sum, debt) => sum + debt.remainingAmount);
   }
 
   // صفوف الأصناف المعلقة في الديون الحالية (مع حساب السعر الفعلي بعد الخصم)
@@ -34,22 +36,22 @@ class InventoryProvider extends ChangeNotifier {
     final debtBox = Hive.box<Debt>('debts');
     List<Map<String, dynamic>> rows = [];
     for (var debt in debtBox.values) {
+      if (debt.isPaid) continue;
+
       double ratio = debt.totalAmount > 0 ? (debt.remainingAmount / debt.totalAmount) : 0.0;
       for (var item in debt.saleItems) {
         int remainingQty = (item.quantity * ratio).round();
         if (remainingQty > 0 || debt.saleItems.length == 1) {
-          // استخدام الكمية المتبقية أو الكمية الكاملة في حال كان الراتب كلياً
           int finalQty = remainingQty > 0 ? remainingQty : item.quantity;
           
-          // حساب السعر الفعلي بعد الخصم للكمية
-          double actualUnitPrice = item.sellPrice - item.discount;
+          double actualUnitPrice = item.sellPrice - item.discountPerUnit;
           double totalActualPrice = actualUnitPrice * finalQty;
 
           rows.add({
             'customerName': debt.customerName,
             'name': item.name,
             'quantity': finalQty,
-            'actualPrice': totalActualPrice, // السعر الفعلي بعد الخصم
+            'actualPrice': totalActualPrice,
           });
         }
       }
@@ -57,9 +59,11 @@ class InventoryProvider extends ChangeNotifier {
     return rows;
   }
 
-  // إجمالي الأرباح المتوقعة من الديون المعلقة
+  // إجمالي الأرباح المتوقعة من الديون المعلقة (غير المسددة فقط)
   double get totalExpectedDebtProfit {
     final debtBox = Hive.box<Debt>('debts');
-    return debtBox.values.fold(0.0, (sum, debt) => sum + debt.totalProfit);
+    return debtBox.values
+        .where((d) => !d.isPaid)
+        .fold(0.0, (sum, debt) => sum + debt.totalProfit);
   }
 }

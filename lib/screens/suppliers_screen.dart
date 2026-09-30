@@ -30,7 +30,9 @@ class _SuppliersScreenState extends State<SuppliersScreen> {
     super.dispose();
   }
 
-  void _showPaymentDialog(BuildContext context, Supplier supplier, int supplierIndex) {
+  // CHANGED: now takes the Supplier object directly rather than its index
+  // in the (possibly stale) cached list - see DebtSupplierProvider.addSupplierPayment.
+  void _showPaymentDialog(BuildContext context, Supplier supplier) {
     final payController = TextEditingController();
     final noteController = TextEditingController();
 
@@ -94,7 +96,8 @@ class _SuppliersScreenState extends State<SuppliersScreen> {
                   date: DateTime.now(),
                   notes: noteController.text.trim(),
                 );
-                Provider.of<DebtSupplierProvider>(context, listen: false).addSupplierPayment(supplierIndex, payment);
+                Provider.of<DebtSupplierProvider>(context, listen: false)
+                    .addSupplierPayment(supplier, payment);
                 Navigator.pop(ctx);
               }
             },
@@ -192,8 +195,6 @@ class _SuppliersScreenState extends State<SuppliersScreen> {
                       itemCount: filteredSuppliers.length,
                       itemBuilder: (context, index) {
                         final s = filteredSuppliers[index];
-                        // الحصول على الفهرس الحقيقي للتاجر في القائمة الأصلية لضمان صحة الدفعات
-                        final originalIndex = supplierProvider.suppliers.indexOf(s);
 
                         return Card(
                           elevation: 3,
@@ -229,7 +230,7 @@ class _SuppliersScreenState extends State<SuppliersScreen> {
                                     ElevatedButton.icon(
                                       style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white),
                                       icon: const Icon(Icons.payment, size: 16),
-                                      onPressed: () => _showPaymentDialog(context, s, originalIndex),
+                                      onPressed: () => _showPaymentDialog(context, s),
                                       label: const Text('دفع دفعة'),
                                     ),
                                   ],

@@ -21,7 +21,7 @@ class SaleItemAdapter extends TypeAdapter<SaleItem> {
       costPrice: fields[1] as double,
       sellPrice: fields[2] as double,
       quantity: fields[3] as int,
-      discount: fields[4] as double,
+      discountPerUnit: fields[4] as double,
     );
   }
 
@@ -38,7 +38,7 @@ class SaleItemAdapter extends TypeAdapter<SaleItem> {
       ..writeByte(3)
       ..write(obj.quantity)
       ..writeByte(4)
-      ..write(obj.discount);
+      ..write(obj.discountPerUnit);
   }
 
   @override
@@ -67,13 +67,14 @@ class SaleAdapter extends TypeAdapter<Sale> {
       totalAmount: fields[1] as double,
       totalProfit: fields[2] as double,
       createdAt: fields[3] as DateTime,
+      source: fields[4] as SaleSource,
     );
   }
 
   @override
   void write(BinaryWriter writer, Sale obj) {
     writer
-      ..writeByte(4)
+      ..writeByte(5)
       ..writeByte(0)
       ..write(obj.items)
       ..writeByte(1)
@@ -81,7 +82,9 @@ class SaleAdapter extends TypeAdapter<Sale> {
       ..writeByte(2)
       ..write(obj.totalProfit)
       ..writeByte(3)
-      ..write(obj.createdAt);
+      ..write(obj.createdAt)
+      ..writeByte(4)
+      ..write(obj.source);
   }
 
   @override
@@ -91,6 +94,45 @@ class SaleAdapter extends TypeAdapter<Sale> {
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is SaleAdapter &&
+          runtimeType == other.runtimeType &&
+          typeId == other.typeId;
+}
+
+class SaleSourceAdapter extends TypeAdapter<SaleSource> {
+  @override
+  final int typeId = 7;
+
+  @override
+  SaleSource read(BinaryReader reader) {
+    switch (reader.readByte()) {
+      case 0:
+        return SaleSource.pos;
+      case 1:
+        return SaleSource.debtPayment;
+      default:
+        return SaleSource.pos;
+    }
+  }
+
+  @override
+  void write(BinaryWriter writer, SaleSource obj) {
+    switch (obj) {
+      case SaleSource.pos:
+        writer.writeByte(0);
+        break;
+      case SaleSource.debtPayment:
+        writer.writeByte(1);
+        break;
+    }
+  }
+
+  @override
+  int get hashCode => typeId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SaleSourceAdapter &&
           runtimeType == other.runtimeType &&
           typeId == other.typeId;
 }

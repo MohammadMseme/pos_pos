@@ -70,6 +70,10 @@ class ProductProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  void refreshProducts() {
+  notifyListeners();
+}
+
   Product? getByBarcode(String barcode) {
     return _productBox.get(barcode);
   }

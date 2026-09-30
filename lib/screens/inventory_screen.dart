@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:hive/hive.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 import '../providers/inventory_provider.dart';
@@ -26,7 +27,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
     });
   }
 
-  // دالة النسخ الاحتياطي الذكي الشامل لكل بيانات البرنامج (أصناف، مبيعات، ديون)
+  // دالة النسخ الاحتياطي الذكي الشامل لكل بيانات البرنامج
   Future<void> _smartBackupToExternalDrive(BuildContext context) async {
     try {
       final appDir = await getApplicationDocumentsDirectory();
@@ -122,7 +123,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
 
   List<Sale> _getFilteredSales(List<Sale> sales) {
     if (_selectedPeriod == 'الكل') {
-      return sales; // إرجاع كافة المبيعات من بداية العمل بدون شروط تاريخية
+      return sales;
     }
     final now = DateTime.now();
     return sales.where((sale) {
@@ -140,10 +141,9 @@ class _InventoryScreenState extends State<InventoryScreen> {
     }).toList();
   }
 
-  // دالة تصفية المشتريات (الأصناف المضافة) حسب الفترة المحددة
   List<Product> _getFilteredPurchases(List<Product> products) {
     if (_selectedPeriod == 'الكل') {
-      return products; // إرجاع كافة المشتريات من البداية
+      return products;
     }
     final now = DateTime.now();
     return products.where((product) {
@@ -161,7 +161,6 @@ class _InventoryScreenState extends State<InventoryScreen> {
     }).toList();
   }
 
-  // نافذة منبثقة لعرض قائمة المشتريات وتفاصيلها
   void _showPurchasesDialog(BuildContext context, List<Product> purchases) {
     double totalPurchasesCost = purchases.fold(0.0, (sum, p) => sum + (p.costPrice * p.stockQuantity));
 
@@ -358,12 +357,11 @@ class _InventoryScreenState extends State<InventoryScreen> {
     final debtProvider = Provider.of<DebtSupplierProvider>(context);
     final productProvider = Provider.of<ProductProvider>(context);
 
-    double totalCustomerDebts = debtProvider.debts.fold(0.0, (sum, debt) => sum + debt.remainingAmount);
+    double totalCustomerDebts = debtProvider.activeDebts.fold(0.0, (sum, debt) => sum + debt.remainingAmount);
 
     final filteredSales = _getFilteredSales(inventory.allSales);
     final filteredPurchases = _getFilteredPurchases(productProvider.products);
 
-    // حساب إجمالي تكلفة المشتريات الجديدة للفترة المحددة
     double totalPurchasesCost = filteredPurchases.fold(0.0, (sum, p) => sum + (p.costPrice * p.stockQuantity));
 
     double totalRevenue = 0.0;
@@ -376,24 +374,24 @@ class _InventoryScreenState extends State<InventoryScreen> {
       grossProfit += sale.totalProfit;
 
       for (var item in sale.items) {
-        double actualSellPrice = item.sellPrice - item.discount;
+        double actualSellPrice = item.sellPrice - item.discountPerUnit;
         double itemProfit = (actualSellPrice - item.costPrice) * item.quantity;
 
         individualSaleRows.add({
+          'saleObject': sale,
           'date': sale.createdAt,
           'name': item.name,
           'quantity': item.quantity,
           'costPrice': item.costPrice,
           'sellPrice': item.sellPrice,
-          'discount': item.discount,
+          'discount': item.discountPerUnit,
           'actualSellPrice': actualSellPrice,
           'profit': itemProfit,
         });
       }
     }
 
-    // صافي الأرباح النهائي بعد طرح قيمة المشتريات الجديدة خلال الفترة
-    double netProfit = grossProfit - totalPurchasesCost;
+    double realizedProfitFromSales = grossProfit;
 
     return Scaffold(
       appBar: AppBar(
@@ -427,12 +425,10 @@ class _InventoryScreenState extends State<InventoryScreen> {
             ),
             const SizedBox(height: 16),
 
-            // صف بطاقات الإحصائيات (مبيعات، مشتريات، صافي أرباح، ديون، نواقص)
             Row(
               children: [
                 _buildStatCard('إجمالي المبيعات', '${totalRevenue.toStringAsFixed(2)} شيكل', Colors.blue),
                 const SizedBox(width: 8),
-                // بطاقة المشتريات الجديدة قابلة للضغط تعرض قائمة الأصناف المشتراة
                 Expanded(
                   child: InkWell(
                     onTap: () => _showPurchasesDialog(context, filteredPurchases),
@@ -446,7 +442,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
                   ),
                 ),
                 const SizedBox(width: 8),
-                _buildStatCard('صافي الأرباح', '${netProfit.toStringAsFixed(2)} شيكل', netProfit >= 0 ? Colors.green : Colors.red),
+                _buildStatCard('الربح المحقق من المبيعات', '${realizedProfitFromSales.toStringAsFixed(2)} شيكل', realizedProfitFromSales >= 0 ? Colors.green : Colors.red),
                 const SizedBox(width: 8),
                 Expanded(
                   child: InkWell(
@@ -496,10 +492,12 @@ class _InventoryScreenState extends State<InventoryScreen> {
                       DataColumn(label: Text('الخصم')),
                       DataColumn(label: Text('سعر البيع الفعلي')),
                       DataColumn(label: Text('إجمالي الربح')),
+                      DataColumn(label: Text('حذف')),
                     ],
                     rows: individualSaleRows.map((row) {
                       final DateTime date = row['date'];
                       final timeFormatted = '${date.day}/${date.month}/${date.year} ${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}';
+                      final Sale saleObj = row['saleObject'];
 
                       return DataRow(cells: [
                         DataCell(Text(timeFormatted)),
@@ -510,6 +508,62 @@ class _InventoryScreenState extends State<InventoryScreen> {
                         DataCell(Text('${row['discount']} شيكل', style: const TextStyle(color: Colors.red))),
                         DataCell(Text('${row['actualSellPrice'].toStringAsFixed(2)} شيكل', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.blue))),
                         DataCell(Text('${row['profit'].toStringAsFixed(2)} شيكل', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green))),
+                        DataCell(
+                          IconButton(
+                            icon: const Icon(Icons.delete, color: Colors.red, size: 20),
+                            tooltip: 'حذف هذه الحركة وإعادة الكميات للمخزون',
+                            onPressed: () async {
+                              // تأكيد الحذف
+                              bool? confirm = await showDialog(
+                                context: context,
+                                builder: (ctx) => AlertDialog(
+                                  title: const Text('تأكيد الحذف وإرجاع الكميات'),
+                                  content: const Text('هل أنت متأكد من حذف حركة البيع؟ سيتم إعادة الكميات المباعة تلقائياً إلى المخزون.'),
+                                  actions: [
+                                    TextButton(
+                                      onPressed: () => Navigator.pop(ctx, false),
+                                      child: const Text('إلغاء'),
+                                    ),
+                                    TextButton(
+                                      onPressed: () => Navigator.pop(ctx, true),
+                                      child: const Text('حذف وإرجاع', style: TextStyle(color: Colors.red)),
+                                    ),
+                                  ],
+                                ),
+                              );
+
+                              if (confirm == true) {
+                                final productBox = Hive.box<Product>('products');
+
+                                // 1. إعادة الكميات المباعة إلى مخزون المنتجات
+                                for (var item in saleObj.items) {
+                                  for (var product in productBox.values) {
+                                    if (product.name == item.name) {
+                                      product.stockQuantity += item.quantity;
+                                      product.save();
+                                      break;
+                                    }
+                                  }
+                                }
+
+                                // 2. حذف سجل البيع نفسه
+                                await saleObj.delete(); 
+
+                                // 3. تحديث الواجهة والـ Providers بالكامل
+                                setState(() {});
+                                Provider.of<ProductProvider>(context, listen: false).refreshProducts();
+
+                                if (!context.mounted) return;
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text('تم حذف حركة البيع وإعادة الكميات إلى المخزون بنجاح'),
+                                    backgroundColor: Colors.green,
+                                  ),
+                                );
+                              }
+                            },
+                          ),
+                        ),
                       ]);
                     }).toList(),
                   ),

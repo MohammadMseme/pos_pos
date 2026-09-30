@@ -24,10 +24,13 @@ class Debt extends HiveObject {
   DateTime createdAt;
 
   @HiveField(6)
-  List<SaleItem> saleItems; // تفاصيل الأصناف المرتبطة بالدين
+  List<SaleItem> saleItems; 
 
   @HiveField(7)
-  double totalProfit; // إجمالي الربح المتوقع من هذا الدين
+  double totalProfit; 
+
+  @HiveField(8)
+  bool isPaid;
 
   Debt({
     required this.customerName,
@@ -36,7 +39,8 @@ class Debt extends HiveObject {
     required this.remainingAmount,
     required this.itemsTaken,
     required this.createdAt,
-    this.saleItems = const [], // جعلناها اختيارية بقيمة افتراضية
-    this.totalProfit = 0.0,    // جعلناها اختيارية بقيمة افتراضية
+    this.saleItems = const [], 
+    this.totalProfit = 0.0,    
+    this.isPaid = false,
   });
 }

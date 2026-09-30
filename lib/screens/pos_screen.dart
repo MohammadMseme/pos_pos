@@ -130,9 +130,15 @@ class _PosScreenState extends State<PosScreen> {
             onPressed: () async {
               if (nameController.text.trim().isNotEmpty) {
                 final debtProvider = Provider.of<DebtSupplierProvider>(context, listen: false);
-                
-                bool success = await posProvider.completeSaleAsDebt(nameController.text.trim(), debtProvider);
-                
+
+                bool success = false;
+                Object? error;
+                try {
+                  success = await posProvider.completeSaleAsDebt(nameController.text.trim(), debtProvider);
+                } catch (e) {
+                  error = e;
+                }
+
                 if (!ctx.mounted) return;
 
                 if (success) {
@@ -141,6 +147,24 @@ class _PosScreenState extends State<PosScreen> {
                     const SnackBar(
                       content: Text('تم تسجيل الدين بنجاح وتحويل الفاتورة لصفحة الديون'),
                       backgroundColor: Colors.green,
+                    ),
+                  );
+                } else if (error != null) {
+                  // The debt record was written (see PosProvider), but
+                  // updating stock afterwards failed. Inform the user
+                  // instead of silently reporting success.
+                  Navigator.pop(ctx);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('تم تسجيل الدين، لكن حدث خطأ أثناء تحديث المخزون: $error'),
+                      backgroundColor: Colors.orange,
+                    ),
+                  );
+                } else {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('تعذر إتمام العملية: الكمية المطلوبة لم تعد متوفرة بالكامل في المخزون'),
+                      backgroundColor: Colors.red,
                     ),
                   );
                 }
@@ -207,7 +231,7 @@ class _PosScreenState extends State<PosScreen> {
                           final item = posProvider.cart[index];
                           
                           final double grossTotal = item.sellPrice * item.quantity;
-                          final double totalDiscountForThisItem = item.discount; 
+                          final double totalDiscountForThisItem = item.lineDiscountTotal;
                           final double itemTotal = grossTotal - totalDiscountForThisItem;
 
                           final qtyController = TextEditingController(text: '${item.quantity}');
@@ -352,11 +376,33 @@ class _PosScreenState extends State<PosScreen> {
                   onPressed: posProvider.cart.isEmpty
                       ? null
                       : () async {
-                          bool success = await posProvider.completeSale();
+                          bool success = false;
+                          Object? error;
+                          try {
+                            success = await posProvider.completeSale();
+                          } catch (e) {
+                            error = e;
+                          }
                           if (!mounted) return;
                           if (success) {
                             ScaffoldMessenger.of(context).showSnackBar(
                               const SnackBar(content: Text('تمت عملية البيع كاش بنجاح')),
+                            );
+                          } else if (error != null) {
+                            // The sale record was written (see PosProvider),
+                            // but updating stock afterwards failed.
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text('تم تسجيل البيع، لكن حدث خطأ أثناء تحديث المخزون: $error'),
+                                backgroundColor: Colors.orange,
+                              ),
+                            );
+                          } else {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text('تعذر إتمام العملية: الكمية المطلوبة لم تعد متوفرة بالكامل في المخزون'),
+                                backgroundColor: Colors.red,
+                              ),
                             );
                           }
                         },

@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import '../models/debt.dart';
@@ -10,6 +11,13 @@ class DebtSupplierProvider extends ChangeNotifier {
 
   List<Debt> debts = [];
   List<Supplier> suppliers = [];
+
+  /// Debts that are still outstanding. Paid-off debts are no longer
+  /// deleted (see payCustomerDebt below) - they are archived via
+  /// `isPaid = true` so history is preserved - so screens that only care
+  /// about debts a customer still owes should read this instead of the
+  /// raw `debts` list.
+  List<Debt> get activeDebts => debts.where((d) => !d.isPaid).toList();
 
   DebtSupplierProvider() {
     _init();
@@ -47,8 +55,15 @@ class DebtSupplierProvider extends ChangeNotifier {
     if (_debtBox != null && _debtBox!.isOpen) {
       Debt? existingDebt;
       try {
+        // Only merge into an existing debt that is still outstanding.
+        // A customer who fully paid off a previous debt (now archived
+        // with isPaid = true) should get a fresh debt record, not have
+        // their new purchase silently merged into old, closed history.
         existingDebt = _debtBox!.values.firstWhere(
-          (d) => d.customerName.trim().toLowerCase() == newDebt.customerName.trim().toLowerCase(),
+          (d) =>
+              !d.isPaid &&
+              d.customerName.trim().toLowerCase() ==
+                  newDebt.customerName.trim().toLowerCase(),
         );
       } catch (_) {
         existingDebt = null;
@@ -90,7 +105,7 @@ class DebtSupplierProvider extends ChangeNotifier {
         costPrice: item.costPrice,
         sellPrice: item.sellPrice,
         quantity: proportionalQty,
-        discount: item.discount,
+        discountPerUnit: item.discountPerUnit,
       );
     }).where((item) => item.quantity > 0).toList();
 
@@ -100,22 +115,33 @@ class DebtSupplierProvider extends ChangeNotifier {
     // إرسال هذه الدفعة لصندوق المبيعات لتظهر في الأرباح والجرد بشكل طبيعي
     if (paidSaleItems.isNotEmpty) {
       final salesBox = Hive.box<Sale>('sales');
-      await salesBox.add(Sale(
-        items: paidSaleItems,
-        totalAmount: paidTotalAmount,
-        totalProfit: paidProfit,
-        createdAt: DateTime.now(),
-      ));
+      try {
+        await salesBox.add(Sale(
+          items: paidSaleItems,
+          totalAmount: paidTotalAmount,
+          totalProfit: paidProfit,
+          createdAt: DateTime.now(),
+          // Marked distinctly from a real POS sale so reports can tell
+          // debt collections apart from register sales.
+          source: SaleSource.debtPayment,
+        ));
+      } catch (e, stack) {
+        debugPrint('[DebtSupplierProvider] Failed to record debt-payment sale: $e');
+        debugPrint('$stack');
+        rethrow;
+      }
     }
 
     debt.paidAmount += amount;
     debt.remainingAmount = debt.totalAmount - debt.paidAmount;
 
     if (debt.remainingAmount <= 0) {
-      await debt.delete();
-    } else {
-      await debt.save();
+      // Archive instead of delete: preserve debt/customer history so it
+      // remains queryable (e.g. "how much has this customer ever owed").
+      debt.remainingAmount = 0;
+      debt.isPaid = true;
     }
+    await debt.save();
 
     loadDebts();
   }
@@ -158,18 +184,22 @@ class DebtSupplierProvider extends ChangeNotifier {
     }
   }
 
-  Future<void> addSupplierPayment(int supplierIndex, SupplierPayment payment) async {
-    if (supplierIndex >= 0 && supplierIndex < suppliers.length) {
-      final supplier = suppliers[supplierIndex];
-      supplier.payments.add(payment);
-      supplier.remainingAmount -= payment.amountPaid;
+  // CHANGED: now takes the Supplier object directly instead of a raw list
+  // index. Indexing into `suppliers` was fragile - if the cached list is
+  // reloaded or reordered between when the UI captured the index and when
+  // this method runs, the wrong supplier could be paid. HiveObjects carry
+  // their own box reference, so operating on the object directly is both
+  // simpler and safe regardless of list ordering.
+  Future<void> addSupplierPayment(Supplier supplier, SupplierPayment payment) async {
+    supplier.payments.add(payment);
+    supplier.remainingAmount -= payment.amountPaid;
 
-      if (supplier.remainingAmount <= 0) {
-        await supplier.delete();
-      } else {
-        await supplier.save();
-      }
-      loadSuppliers();
+    if (supplier.remainingAmount <= 0) {
+      supplier.remainingAmount = 0; // avoid a meaningless negative balance
+      await supplier.delete();
+    } else {
+      await supplier.save();
     }
+    loadSuppliers();
   }
 }
