@@ -5,6 +5,13 @@ part of 'debt.dart';
 // **************************************************************************
 // TypeAdapterGenerator
 // **************************************************************************
+//
+// NOTE: This file is normally produced by `build_runner`/`hive_generator`.
+// It has been hand-updated here to add field 9 (`totalCost`) to the Debt
+// model. If you regenerate this file later with `build_runner`, make sure
+// the generated `read()` keeps the same null-safe fallback for field 9 so
+// that debts saved by earlier app versions (without this field) still load
+// correctly instead of crashing on a missing key.
 
 class DebtAdapter extends TypeAdapter<Debt> {
   @override
@@ -16,23 +23,35 @@ class DebtAdapter extends TypeAdapter<Debt> {
     final fields = <int, dynamic>{
       for (int i = 0; i < numOfFields; i++) reader.readByte(): reader.read(),
     };
+
+    final double totalAmount = fields[1] as double;
+    final double totalProfit = fields[7] as double;
+
     return Debt(
       customerName: fields[0] as String,
-      totalAmount: fields[1] as double,
+      totalAmount: totalAmount,
       paidAmount: fields[2] as double,
       remainingAmount: fields[3] as double,
       itemsTaken: (fields[4] as List).cast<String>(),
       createdAt: fields[5] as DateTime,
       saleItems: (fields[6] as List).cast<SaleItem>(),
-      totalProfit: fields[7] as double,
+      totalProfit: totalProfit,
       isPaid: fields[8] as bool,
+      // Field 9 (totalCost) will be absent on debts written before this
+      // field existed. Falling back to `totalAmount - totalProfit`
+      // reconstructs the same value the constructor's default would have
+      // produced, so old debts behave exactly as if totalCost had always
+      // been stored.
+      totalCost: fields[9] == null
+          ? (totalAmount - totalProfit)
+          : fields[9] as double,
     );
   }
 
   @override
   void write(BinaryWriter writer, Debt obj) {
     writer
-      ..writeByte(9)
+      ..writeByte(10)
       ..writeByte(0)
       ..write(obj.customerName)
       ..writeByte(1)
@@ -50,7 +69,9 @@ class DebtAdapter extends TypeAdapter<Debt> {
       ..writeByte(7)
       ..write(obj.totalProfit)
       ..writeByte(8)
-      ..write(obj.isPaid);
+      ..write(obj.isPaid)
+      ..writeByte(9)
+      ..write(obj.totalCost);
   }
 
   @override

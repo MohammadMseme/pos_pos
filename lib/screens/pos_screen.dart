@@ -4,6 +4,122 @@ import '../providers/pos_provider.dart';
 import '../providers/product_provider.dart';
 import '../providers/debt_supplier_provider.dart';
 
+// NEW: dedicated widget for the customer-name autocomplete field used in
+// the debt/deferred-invoice dialog.
+//
+// Why this is its own StatefulWidget rather than an inline Autocomplete:
+// `Autocomplete<String>` (and the `RawAutocomplete` it wraps) asserts that
+// `focusNode` and `textEditingController` are either BOTH supplied or BOTH
+// left null - passing just a controller (as the previous version did)
+// trips `(focusNode == null) == (textEditingController == null)` and
+// throws during build. Flutter's fallback error rendering for a failed
+// build has no real height constraint, which is what produced the
+// "Bottom overflowed by 9957 pixels" error alongside the assertion - it
+// was a symptom of the same root cause, not a second bug.
+// Wrapping the paired FocusNode in a State object also means it gets
+// created exactly once and properly disposed, instead of being a
+// throwaway local variable inside a dialog builder.
+class _DebtCustomerAutocomplete extends StatefulWidget {
+  final TextEditingController nameController;
+  final List<String> knownCustomerNames;
+
+  const _DebtCustomerAutocomplete({
+    required this.nameController,
+    required this.knownCustomerNames,
+  });
+
+  @override
+  State<_DebtCustomerAutocomplete> createState() => _DebtCustomerAutocompleteState();
+}
+
+class _DebtCustomerAutocompleteState extends State<_DebtCustomerAutocomplete> {
+  final FocusNode _focusNode = FocusNode();
+
+  @override
+  void dispose() {
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Autocomplete<String>(
+      // Paired together - fixes the assertion error.
+      textEditingController: widget.nameController,
+      focusNode: _focusNode,
+      optionsBuilder: (TextEditingValue textEditingValue) {
+        final query = textEditingValue.text.trim().toLowerCase();
+        if (query.isEmpty) {
+          // Show the full known-customer list when the field is focused
+          // but empty, so cashiers can browse it too.
+          return widget.knownCustomerNames;
+        }
+        return widget.knownCustomerNames.where(
+          (name) => name.toLowerCase().contains(query),
+        );
+      },
+      onSelected: (String selection) {
+        widget.nameController.text = selection;
+      },
+      fieldViewBuilder: (context, controller, focusNode, onFieldSubmitted) {
+        return TextField(
+          controller: controller,
+          focusNode: focusNode,
+          autofocus: true,
+          decoration: const InputDecoration(
+            hintText: 'اكتب اسم الزبون أو اختر من القائمة',
+            border: OutlineInputBorder(),
+            prefixIcon: Icon(Icons.person_search),
+          ),
+        );
+      },
+      optionsViewBuilder: (context, onSelected, options) {
+        final optionsList = options.toList();
+        return Align(
+          alignment: Alignment.topLeft,
+          child: Material(
+            elevation: 4,
+            borderRadius: BorderRadius.circular(8),
+            child: ConstrainedBox(
+              // Hard cap on the dropdown's height, regardless of how many
+              // customers match - this is what actually prevents the
+              // overflow, rather than a hand-computed `length * 48.0`
+              // pixel height that grows without bound as the customer
+              // list grows.
+              constraints: const BoxConstraints(maxHeight: 220, maxWidth: 328),
+              child: optionsList.isEmpty
+                  ? const Padding(
+                      padding: EdgeInsets.all(12),
+                      child: Text(
+                        'لا يوجد زبون مطابق',
+                        style: TextStyle(color: Colors.grey, fontSize: 13),
+                      ),
+                    )
+                  : ListView.builder(
+                      padding: const EdgeInsets.symmetric(vertical: 4),
+                      // shrinkWrap + the ConstrainedBox above together
+                      // guarantee this list always sizes itself within a
+                      // bounded box, however many options there are.
+                      shrinkWrap: true,
+                      itemCount: optionsList.length,
+                      itemBuilder: (context, index) {
+                        final option = optionsList[index];
+                        return ListTile(
+                          dense: true,
+                          leading: const Icon(Icons.person, size: 18, color: Colors.orange),
+                          title: Text(option),
+                          onTap: () => onSelected(option),
+                        );
+                      },
+                    ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
 class PosScreen extends StatefulWidget {
   const PosScreen({super.key});
 
@@ -99,29 +215,174 @@ class _PosScreenState extends State<PosScreen> {
     );
   }
 
+  // NEW: شريط التبويبات (الفواتير المعلقة) - يسمح بفتح أكثر من نافذة بيع
+  // متزامنة، كل منها بسلة مستقلة تماماً، والتبديل بينها دون فقدان أي
+  // بيانات في أي منها (انظر PosSession/PosProvider في pos_provider.dart).
+  Widget _buildSessionTabsBar(BuildContext context, PosProvider posProvider) {
+    return Container(
+      height: 52,
+      color: Colors.grey.shade200,
+      child: Row(
+        children: [
+          Expanded(
+            child: ListView.builder(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+              itemCount: posProvider.sessionCount,
+              itemBuilder: (context, index) {
+                final bool isActive = index == posProvider.currentSessionIndex;
+                final int itemCount = posProvider.cartCountFor(index);
+                final bool canClose = posProvider.sessionCount > 1;
+
+                return Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 4),
+                  child: InkWell(
+                    onTap: () => posProvider.switchToSession(index),
+                    borderRadius: BorderRadius.circular(8),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: isActive ? Colors.blue : Colors.white,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                          color: isActive ? Colors.blue.shade700 : Colors.grey.shade400,
+                        ),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.receipt_long,
+                            size: 16,
+                            color: isActive ? Colors.white : Colors.grey.shade700,
+                          ),
+                          const SizedBox(width: 6),
+                          Text(
+                            posProvider.labelFor(index),
+                            style: TextStyle(
+                              color: isActive ? Colors.white : Colors.black87,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 13,
+                            ),
+                          ),
+                          if (itemCount > 0) ...[
+                            const SizedBox(width: 6),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                              decoration: BoxDecoration(
+                                color: isActive ? Colors.white : Colors.blue,
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: Text(
+                                '$itemCount',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.bold,
+                                  color: isActive ? Colors.blue.shade700 : Colors.white,
+                                ),
+                              ),
+                            ),
+                          ],
+                          if (canClose) ...[
+                            const SizedBox(width: 4),
+                            InkWell(
+                              onTap: () => _handleCloseSession(context, posProvider, index),
+                              child: Icon(
+                                Icons.close,
+                                size: 16,
+                                color: isActive ? Colors.white : Colors.grey.shade600,
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            child: IconButton(
+              icon: const Icon(Icons.add_box, color: Colors.blue),
+              tooltip: 'فتح نقطة بيع جديدة (معلقة)',
+              onPressed: () => posProvider.addNewSession(),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // تأكيد إغلاق تبويبة تحتوي على أصناف لم تُباع بعد، لتجنب فقدان بيانات
+  // السلة بشكل غير مقصود بضغطة واحدة. تُغلق التبويبة الفارغة مباشرة دون
+  // أي تأكيد.
+  void _handleCloseSession(BuildContext context, PosProvider posProvider, int index) {
+    final itemCount = posProvider.cartCountFor(index);
+    if (itemCount == 0) {
+      posProvider.closeSession(index);
+      return;
+    }
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('إغلاق التبويبة؟'),
+        content: Text(
+          'تحتوي "${posProvider.labelFor(index)}" على $itemCount صنف لم تُباع بعد. سيتم فقدان هذه السلة نهائياً عند الإغلاق. هل تريد الاستمرار؟',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('إلغاء')),
+          TextButton(
+            onPressed: () {
+              posProvider.closeSession(index);
+              Navigator.pop(ctx);
+            },
+            child: const Text('إغلاق وحذف السلة', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+  }
+
   void _showDebtDialog(BuildContext context, PosProvider posProvider) {
     final nameController = TextEditingController();
+
+    // NEW: existing customer names (from past/active debts) used to power
+    // the autocomplete dropdown below, so cashiers can quickly pick a
+    // returning customer instead of retyping their name (and risking a
+    // near-duplicate name that would fail to merge with their existing debt).
+    final debtProvider = Provider.of<DebtSupplierProvider>(context, listen: false);
+    final knownCustomerNames = debtProvider.knownCustomerNames;
 
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('تسجيل فاتورة دين / آجل'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              'المبلغ الإجمالي للدين: ${posProvider.totalAmount.toStringAsFixed(2)} شيكل',
-              style: const TextStyle(fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: nameController,
-              decoration: const InputDecoration(
-                labelText: 'اسم الزبون المدين',
-                border: OutlineInputBorder(),
+        content: SizedBox(
+          width: 360,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'المبلغ الإجمالي للدين: ${posProvider.totalAmount.toStringAsFixed(2)} شيكل',
+                style: const TextStyle(fontWeight: FontWeight.bold),
               ),
-            ),
-          ],
+              const SizedBox(height: 12),
+              const Text('اسم الزبون المدين', style: TextStyle(fontSize: 12, color: Colors.grey)),
+              const SizedBox(height: 4),
+              // Autocomplete searchable dropdown for customer names, with
+              // a properly paired FocusNode + TextEditingController and a
+              // height-constrained options list (see _DebtCustomerAutocomplete
+              // above for why this needed to be its own widget).
+              _DebtCustomerAutocomplete(
+                nameController: nameController,
+                knownCustomerNames: knownCustomerNames,
+              ),
+            ],
+          ),
         ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('إلغاء')),
@@ -129,8 +390,6 @@ class _PosScreenState extends State<PosScreen> {
             style: ElevatedButton.styleFrom(backgroundColor: Colors.orange.shade800),
             onPressed: () async {
               if (nameController.text.trim().isNotEmpty) {
-                final debtProvider = Provider.of<DebtSupplierProvider>(context, listen: false);
-
                 bool success = false;
                 Object? error;
                 try {
@@ -188,10 +447,16 @@ class _PosScreenState extends State<PosScreen> {
         actions: [
           IconButton(
             icon: const Icon(Icons.delete_sweep, color: Colors.red),
-            tooltip: 'تفريغ السلة',
+            tooltip: 'تفريغ السلة الحالية',
             onPressed: () => posProvider.clearCart(),
           ),
         ],
+        // NEW: شريط تبويبات الفواتير المعلقة - يظهر دوماً أسفل العنوان،
+        // ويتيح فتح نافذة بيع جديدة أو التبديل بين عدة عمليات بيع متزامنة.
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(52),
+          child: _buildSessionTabsBar(context, posProvider),
+        ),
       ),
       body: Row(
         children: [

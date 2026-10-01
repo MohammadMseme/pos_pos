@@ -5,9 +5,10 @@ import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 import '../providers/inventory_provider.dart';
 import '../providers/debt_supplier_provider.dart';
-import '../providers/product_provider.dart'; 
+import '../providers/product_provider.dart';
 import '../models/sale.dart';
 import '../models/product.dart';
+import '../models/debt.dart';
 
 class InventoryScreen extends StatefulWidget {
   const InventoryScreen({super.key});
@@ -18,6 +19,12 @@ class InventoryScreen extends StatefulWidget {
 
 class _InventoryScreenState extends State<InventoryScreen> {
   String _selectedPeriod = 'يومي';
+
+  // NEW: selected timeframe (in days) for the "Best-Selling Items" widget.
+  // Kept separate from `_selectedPeriod` above (which drives the financial
+  // report / sales log) since the two widgets can be viewed on different
+  // timeframes independently.
+  int _bestSellersDays = 1;
 
   @override
   void initState() {
@@ -161,6 +168,33 @@ class _InventoryScreenState extends State<InventoryScreen> {
     }).toList();
   }
 
+  // NEW: تُطبِّق فلتر الفترة الزمنية المختار حالياً في هذه الصفحة
+  // (يومي/أسبوعي/شهري/سنوي/الكل) على قائمة الديون - بالضبط بنفس المنطق
+  // المستخدم مع المبيعات والمشتريات أعلاه، لكن بالاعتماد على
+  // `debt.createdAt` (تاريخ إنشاء الدين). هذا يجعل "ديون مستحقة" وصندوق
+  // "جرد ومرابح الديون المعلقة" في هذه الصفحة يعكسان فقط الديون التي تقع
+  // ضمن الفترة المختارة، على عكس صفحة "ديون التجار والموردين" التي تعرض
+  // كل الديون دوماً دون أي قيد زمني.
+  List<Debt> _getFilteredDebts(List<Debt> debts) {
+    if (_selectedPeriod == 'الكل') {
+      return debts;
+    }
+    final now = DateTime.now();
+    return debts.where((debt) {
+      if (_selectedPeriod == 'يومي') {
+        return debt.createdAt.day == now.day &&
+            debt.createdAt.month == now.month &&
+            debt.createdAt.year == now.year;
+      } else if (_selectedPeriod == 'أسبوعي') {
+        return now.difference(debt.createdAt).inDays <= 7;
+      } else if (_selectedPeriod == 'شهري') {
+        return debt.createdAt.month == now.month && debt.createdAt.year == now.year;
+      } else {
+        return debt.createdAt.year == now.year;
+      }
+    }).toList();
+  }
+
   void _showPurchasesDialog(BuildContext context, List<Product> purchases) {
     double totalPurchasesCost = purchases.fold(0.0, (sum, p) => sum + (p.costPrice * p.stockQuantity));
 
@@ -281,10 +315,17 @@ class _InventoryScreenState extends State<InventoryScreen> {
     );
   }
 
-  void _showDebtInventoryDialog(BuildContext context, InventoryProvider inventory) {
-    final pendingRows = inventory.pendingDebtInventoryRows;
-    final expectedProfit = inventory.totalExpectedDebtProfit;
-    final totalDebts = inventory.totalCustomerDebts;
+  // CHANGED: يستقبل الآن قائمة الديون بعد فلترتها بالفترة الزمنية المختارة
+  // حالياً في الصفحة (`filteredDebts`)، بدلاً من أن يقرأ المزوّد كل الديون
+  // مباشرة - لتعرض هذه النافذة فقط الديون التي تقع ضمن الفترة المحددة.
+  void _showDebtInventoryDialog(
+    BuildContext context,
+    InventoryProvider inventory,
+    List<Debt> filteredDebts,
+  ) {
+    final pendingRows = inventory.pendingDebtInventoryRowsFor(filteredDebts);
+    final expectedProfit = inventory.totalExpectedDebtProfitFor(filteredDebts);
+    final totalDebts = inventory.totalCustomerDebtsFor(filteredDebts);
 
     showDialog(
       context: context,
@@ -327,12 +368,46 @@ class _InventoryScreenState extends State<InventoryScreen> {
                         itemCount: pendingRows.length,
                         itemBuilder: (context, index) {
                           final row = pendingRows[index];
+                          // NEW: whether رأس المال لهذا الدين تم استرداده
+                          // بالكامل بعد (انظر Debt.isCapitalRecovered -
+                          // السداد يُخصَّص لرأس المال أولاً على مستوى
+                          // الدين ككل).
+                          final bool capitalRecovered = row['capitalRecovered'] as bool;
+                          final double remainingCapital = row['remainingCapital'] as double;
+
                           return Card(
                             margin: const EdgeInsets.symmetric(vertical: 4),
                             child: ListTile(
                               title: Text(row['name'], style: const TextStyle(fontWeight: FontWeight.bold)),
-                              subtitle: Text('الزبون: ${row['customerName']} | الكمية: ${row['quantity']}'),
-                              trailing: Text('${row['actualPrice'].toStringAsFixed(2)} شيكل', style: const TextStyle(color: Colors.blue, fontWeight: FontWeight.bold)),
+                              subtitle: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text('الزبون: ${row['customerName']}'),
+                                  if (!capitalRecovered)
+                                    Padding(
+                                      padding: const EdgeInsets.only(top: 2),
+                                      child: Text(
+                                        'المتبقي لاسترداد رأس المال: ${remainingCapital.toStringAsFixed(2)} شيكل',
+                                        style: const TextStyle(fontSize: 11, color: Colors.orange),
+                                      ),
+                                    ),
+                                ],
+                              ),
+                              trailing: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: capitalRecovered ? Colors.green.shade100 : Colors.orange.shade100,
+                                  borderRadius: BorderRadius.circular(6),
+                                ),
+                                child: Text(
+                                  capitalRecovered ? 'تم استرداد رأس المال' : 'لم يُسترد رأس المال بعد',
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.bold,
+                                    color: capitalRecovered ? Colors.green.shade800 : Colors.orange.shade800,
+                                  ),
+                                ),
+                              ),
                             ),
                           );
                         },
@@ -351,13 +426,134 @@ class _InventoryScreenState extends State<InventoryScreen> {
     );
   }
 
+  // NEW: "Best-Selling Items" widget. Collapsed by default as a small
+  // header card; tapping it expands to reveal the timeframe filter
+  // (today / every 2 days / weekly / monthly) and the ranked list,
+  // sourced from InventoryProvider.getBestSellingItems.
+  Widget _buildBestSellersCard(InventoryProvider inventory) {
+    final bestSellers = inventory.getBestSellingItems(days: _bestSellersDays, topN: 10);
+
+    return Card(
+      margin: EdgeInsets.zero,
+      color: Colors.teal.withValues(alpha: 0.05),
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(10),
+        side: BorderSide(color: Colors.teal.withValues(alpha: 0.3)),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Theme(
+        // ExpansionTile draws a divider above/below its children by
+        // default when expanded - suppressed here so it matches this
+        // screen's existing bordered-card look instead.
+        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+        child: ExpansionTile(
+          // Collapsed by default, as requested - expands only on tap.
+          initiallyExpanded: false,
+          tilePadding: const EdgeInsets.symmetric(horizontal: 12),
+          leading: const Icon(Icons.trending_up, color: Colors.teal),
+          title: const Text(
+            'الأصناف الأكثر مبيعاً',
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+          ),
+          subtitle: const Text(
+            'اضغط لعرض القائمة وفلترة الفترة الزمنية',
+            style: TextStyle(fontSize: 11, color: Colors.grey),
+          ),
+          childrenPadding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                const Text('الفترة: ', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                DropdownButton<int>(
+                  value: _bestSellersDays,
+                  underline: const SizedBox(),
+                  items: const [
+                    DropdownMenuItem(value: 1, child: Text('اليوم')),
+                    DropdownMenuItem(value: 2, child: Text('آخر يومين')),
+                    DropdownMenuItem(value: 7, child: Text('آخر أسبوع')),
+                    DropdownMenuItem(value: 30, child: Text('آخر شهر')),
+                  ],
+                  onChanged: (val) {
+                    if (val != null) {
+                      setState(() {
+                        _bestSellersDays = val;
+                      });
+                    }
+                  },
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            if (bestSellers.isEmpty)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 16),
+                child: Center(
+                  child: Text('لا توجد مبيعات مسجلة خلال هذه الفترة', style: TextStyle(color: Colors.grey)),
+                ),
+              )
+            else
+              SizedBox(
+                height: 150,
+                child: ListView.separated(
+                  scrollDirection: Axis.horizontal,
+                  itemCount: bestSellers.length,
+                  separatorBuilder: (_, __) => const SizedBox(width: 8),
+                  itemBuilder: (context, index) {
+                    final entry = bestSellers[index];
+                    return Container(
+                      width: 160,
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: Colors.teal.withValues(alpha: 0.25)),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Text(
+                            '#${index + 1}',
+                            style: TextStyle(color: Colors.teal.shade700, fontWeight: FontWeight.bold),
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            entry.key,
+                            style: const TextStyle(fontWeight: FontWeight.bold),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            '${entry.value} قطعة مباعة',
+                            style: TextStyle(color: Colors.grey.shade700, fontSize: 12),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final inventory = Provider.of<InventoryProvider>(context);
     final debtProvider = Provider.of<DebtSupplierProvider>(context);
     final productProvider = Provider.of<ProductProvider>(context);
 
-    double totalCustomerDebts = debtProvider.activeDebts.fold(0.0, (sum, debt) => sum + debt.remainingAmount);
+    // CHANGED: الديون الظاهرة في هذه الصفحة (في بطاقة "ديون مستحقة" وفي
+    // نافذة "جرد ومرابح الديون المعلقة") تُفلتَر الآن بنفس فلتر الفترة
+    // الزمنية المختار أعلاه (يومي/أسبوعي/شهري/سنوي/الكل)، تماماً كالمبيعات
+    // والمشتريات. نبدأ من activeDebts (غير المسددة) ثم نطبّق فلتر الفترة.
+    final filteredDebts = _getFilteredDebts(debtProvider.activeDebts);
+    double totalCustomerDebts = filteredDebts.fold(0.0, (sum, debt) => sum + debt.remainingAmount);
 
     final filteredSales = _getFilteredSales(inventory.allSales);
     final filteredPurchases = _getFilteredPurchases(productProvider.products);
@@ -446,7 +642,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
                 const SizedBox(width: 8),
                 Expanded(
                   child: InkWell(
-                    onTap: () => _showDebtInventoryDialog(context, inventory),
+                    onTap: () => _showDebtInventoryDialog(context, inventory, filteredDebts),
                     borderRadius: BorderRadius.circular(10),
                     child: _buildStatCardWidget(
                       'ديون مستحقة',
@@ -471,6 +667,10 @@ class _InventoryScreenState extends State<InventoryScreen> {
                 ),
               ],
             ),
+            const SizedBox(height: 20),
+
+            // NEW: Best-Selling Items widget
+            _buildBestSellersCard(inventory),
             const SizedBox(height: 20),
 
             const Align(

@@ -86,8 +86,67 @@ class _DebtsScreenState extends State<DebtsScreen> {
         title: Text('تسديد دين: ${debt.customerName}'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text('المبلغ المتبقي حالياً: ${debt.remainingAmount.toStringAsFixed(2)} شيكل'),
+            const SizedBox(height: 8),
+            // توضيح لمنطق "رأس المال أولاً، ثم الربح": كل دفعة تُضاف فوراً
+            // بالكامل إلى إجمالي المبيعات بمجرد سدادها. طالما لم يُسترد
+            // رأس المال بالكامل، تُحتسب الدفعة كاسترداد رأس مال فقط (بدون
+            // أي إضافة للأرباح)؛ وبعد اكتمال استرداد رأس المال، أي دفعة
+            // لاحقة (أو الجزء الزائد من الدفعة الحالية) يُضاف إلى الأرباح
+            // أيضاً بالتوازي مع إجمالي المبيعات (انظر
+            // DebtSupplierProvider.payCustomerDebt).
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: Colors.grey.shade100,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text('رأس المال المتبقي:', style: TextStyle(fontSize: 12)),
+                      Text(
+                        '${debt.remainingCapital.toStringAsFixed(2)} شيكل',
+                        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 2),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text('الربح المتبقي:', style: TextStyle(fontSize: 12)),
+                      Text(
+                        '${debt.remainingProfit.toStringAsFixed(2)} شيكل',
+                        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                      ),
+                    ],
+                  ),
+                  if (debt.isCapitalRecovered)
+                    const Padding(
+                      padding: EdgeInsets.only(top: 4),
+                      child: Text(
+                        '✓ تم استرداد رأس المال بالكامل - أي دفعة الآن تُضاف كاملة إلى الأرباح',
+                        style: TextStyle(fontSize: 11, color: Colors.green),
+                      ),
+                    )
+                  else
+                    const Padding(
+                      padding: EdgeInsets.only(top: 4),
+                      child: Text(
+                        'ملاحظة: هذه الدفعة تُضاف فوراً إلى إجمالي المبيعات، لكنها تُحتسب استرداد رأس مال فقط حتى يكتمل سداد رأس المال بالكامل.',
+                        style: TextStyle(fontSize: 11, color: Colors.orange),
+                      ),
+                    ),
+                ],
+              ),
+            ),
             const SizedBox(height: 12),
             TextField(
               controller: payController,
@@ -117,7 +176,11 @@ class _DebtsScreenState extends State<DebtsScreen> {
   Widget build(BuildContext context) {
     final debtProvider = Provider.of<DebtSupplierProvider>(context);
 
-    // تصفية قائمة الديون بحسب النص المكتوب في مربع البحث
+    // CHANGED: هذه الصفحة تعرض دوماً كل الديون النشطة دون أي قيد زمني -
+    // لا يوجد هنا فلتر فترة (يوم/شهر/الكل)؛ ذلك الفلتر أصبح خاصاً بصفحة
+    // الجرد فقط (انظر inventory_screen.dart)، بينما تبقى هذه الصفحة
+    // (ديون التجار والموردين) تعرض كل سجل دين نشط بشكل شامل دائماً.
+    // الفلترة هنا تقتصر على نص البحث عن اسم الزبون فقط.
     // ملاحظة: نستخدم activeDebts بدلاً من debts لأن الديون المسددة بالكامل
     // أصبحت تُؤرشف (isPaid = true) بدلاً من حذفها، ولا يجب أن تظهر هنا.
     final filteredDebts = debtProvider.activeDebts.where((debt) {
